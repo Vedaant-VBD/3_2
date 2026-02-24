@@ -28,6 +28,9 @@ async def analyze_comment(data: CommentRequest):
     if not data.comment.strip():
         raise HTTPException(status_code=400, detail="Comment cannot be empty")
 
+    if not AIPIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="API key missing")
+
     headers = {
         "Authorization": f"Bearer {AIPIPE_API_KEY}",
         "Content-Type": "application/json"
@@ -41,19 +44,19 @@ async def analyze_comment(data: CommentRequest):
                 "content": """
 You are a strict sentiment classifier.
 
-Rules:
-- positive: clearly satisfied or happy
-- negative: clearly dissatisfied or unhappy
-- neutral: mixed, average, or balanced
+Classification Rules:
+- positive → clearly satisfied or happy
+- negative → clearly dissatisfied or unhappy
+- neutral → mixed or balanced opinion
 
-Rating scale:
+Rating Scale:
 5 = extremely positive
 4 = clearly positive
 3 = neutral or mixed
 2 = clearly negative
 1 = extremely negative
 
-Return ONLY valid JSON matching schema.
+Return ONLY valid JSON.
 """
             },
             {
@@ -85,20 +88,32 @@ Return ONLY valid JSON matching schema.
         }
     }
 
-    response = requests.post(
-        AIPIPE_URL,
-        headers=headers,
-        json=body,
-        timeout=8
-    )
-
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=response.text)
-
-    result = response.json()
-
-    # STRICT extraction (no neutral fallback)
     try:
-        return result["output"][0]["content"][0]["parsed"]
-    except Exception:
-        raise HTTPException(status_code=500, detail="Invalid AI response")
+        response = requests.post(
+            AIPIPE_URL,
+            headers=headers,
+            json=body,
+            timeout=8
+        )
+
+        response.raise_for_status()
+        result = response.json()
+
+        # SAFE extraction that works with AI Pipe
+        output = result.get("output", [])
+        if not output:
+            raise HTTPException(status_code=500, detail="Invalid AI response")
+
+        content = output[0].get("content", [])
+        if not content:
+            raise HTTPException(status_code=500, detail="Invalid AI response")
+
+        parsed = content[0].get("parsed")
+
+        if not parsed:
+            raise HTTPException(status_code=500, detail="Schema parsing failed")
+
+        return parsed
+
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=str(e))
