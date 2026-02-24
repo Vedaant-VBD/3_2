@@ -6,7 +6,6 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,16 +15,11 @@ app.add_middleware(
 )
 
 AIPIPE_API_KEY = os.environ.get("AIPIPE_API_KEY")
-AIPIPE_URL = "https://aipipe.org/openai/v1/responses"  # <-- IMPORTANT
+AIPIPE_URL = "https://aipipe.org/openai/v1/responses"
 
 
 class CommentRequest(BaseModel):
     comment: str
-
-
-@app.get("/")
-def home():
-    return {"status": "running"}
 
 
 @app.post("/comment")
@@ -34,9 +28,6 @@ async def analyze_comment(data: CommentRequest):
     if not data.comment.strip():
         raise HTTPException(status_code=400, detail="Comment cannot be empty")
 
-    if not AIPIPE_API_KEY:
-        raise HTTPException(status_code=500, detail="API key missing")
-
     headers = {
         "Authorization": f"Bearer {AIPIPE_API_KEY}",
         "Content-Type": "application/json"
@@ -44,7 +35,32 @@ async def analyze_comment(data: CommentRequest):
 
     body = {
         "model": "gpt-4.1-mini",
-        "input": f"Analyze sentiment and rate 1-5. Comment: {data.comment}",
+        "input": [
+            {
+                "role": "system",
+                "content": """
+You are a strict sentiment classifier.
+
+Rules:
+- positive: clearly satisfied or happy
+- negative: clearly dissatisfied or unhappy
+- neutral: mixed, average, or balanced
+
+Rating scale:
+5 = extremely positive
+4 = clearly positive
+3 = neutral or mixed
+2 = clearly negative
+1 = extremely negative
+
+Return ONLY valid JSON matching schema.
+"""
+            },
+            {
+                "role": "user",
+                "content": data.comment
+            }
+        ],
         "response_format": {
             "type": "json_schema",
             "json_schema": {
@@ -69,34 +85,20 @@ async def analyze_comment(data: CommentRequest):
         }
     }
 
+    response = requests.post(
+        AIPIPE_URL,
+        headers=headers,
+        json=body,
+        timeout=8
+    )
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=response.text)
+
+    result = response.json()
+
+    # STRICT extraction (no neutral fallback)
     try:
-        response = requests.post(
-            AIPIPE_URL,
-            headers=headers,
-            json=body,
-            timeout=8   # prevent Vercel timeout
-        )
-
-        if response.status_code != 200:
-            return {
-                "sentiment": "neutral",
-                "rating": 3
-            }
-
-        result = response.json()
-
-        # SAFE extraction
-        try:
-            structured_output = result["output"][0]["content"][0]["parsed"]
-            return structured_output
-        except:
-            return {
-                "sentiment": "neutral",
-                "rating": 3
-            }
-
+        return result["output"][0]["content"][0]["parsed"]
     except Exception:
-        return {
-            "sentiment": "neutral",
-            "rating": 3
-        }
+        raise HTTPException(status_code=500, detail="Invalid AI response")
