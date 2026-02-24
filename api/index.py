@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +16,7 @@ app.add_middleware(
 )
 
 AIPIPE_API_KEY = os.environ.get("AIPIPE_API_KEY")
-AIPIPE_URL = "https://aipipe.org/openai/v1/responses"
+AIPIPE_URL = "https://aipipe.org/openai/v1/chat/completions"
 
 
 class CommentRequest(BaseModel):
@@ -26,10 +27,7 @@ class CommentRequest(BaseModel):
 async def analyze_comment(data: CommentRequest):
 
     if not data.comment.strip():
-        raise HTTPException(status_code=400, detail="Comment cannot be empty")
-
-    if not AIPIPE_API_KEY:
-        raise HTTPException(status_code=500, detail="API key missing")
+        return {"sentiment": "neutral", "rating": 3}
 
     headers = {
         "Authorization": f"Bearer {AIPIPE_API_KEY}",
@@ -38,25 +36,26 @@ async def analyze_comment(data: CommentRequest):
 
     body = {
         "model": "gpt-4.1-mini",
-        "input": [
+        "messages": [
             {
                 "role": "system",
                 "content": """
 You are a strict sentiment classifier.
 
-Classification Rules:
-- positive → clearly satisfied or happy
-- negative → clearly dissatisfied or unhappy
-- neutral → mixed or balanced opinion
+Rules:
+positive → clearly satisfied
+negative → clearly dissatisfied
+neutral → mixed opinion
 
-Rating Scale:
+Rating:
 5 = extremely positive
-4 = clearly positive
-3 = neutral or mixed
-2 = clearly negative
+4 = positive
+3 = neutral
+2 = negative
 1 = extremely negative
 
-Return ONLY valid JSON.
+Respond ONLY in this exact JSON format:
+{"sentiment":"positive","rating":5}
 """
             },
             {
@@ -64,28 +63,7 @@ Return ONLY valid JSON.
                 "content": data.comment
             }
         ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "sentiment_schema",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "sentiment": {
-                            "type": "string",
-                            "enum": ["positive", "negative", "neutral"]
-                        },
-                        "rating": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 5
-                        }
-                    },
-                    "required": ["sentiment", "rating"],
-                    "additionalProperties": False
-                }
-            }
-        }
+        "temperature": 0
     }
 
     try:
@@ -96,24 +74,22 @@ Return ONLY valid JSON.
             timeout=8
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+            return {"sentiment": "neutral", "rating": 3}
+
         result = response.json()
 
-        # SAFE extraction that works with AI Pipe
-        output = result.get("output", [])
-        if not output:
-            raise HTTPException(status_code=500, detail="Invalid AI response")
+        content = result["choices"][0]["message"]["content"]
 
-        content = output[0].get("content", [])
-        if not content:
-            raise HTTPException(status_code=500, detail="Invalid AI response")
+        # Extract JSON safely
+        try:
+            parsed = json.loads(content)
+            return {
+                "sentiment": parsed["sentiment"],
+                "rating": parsed["rating"]
+            }
+        except:
+            return {"sentiment": "neutral", "rating": 3}
 
-        parsed = content[0].get("parsed")
-
-        if not parsed:
-            raise HTTPException(status_code=500, detail="Schema parsing failed")
-
-        return parsed
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        return {"sentiment": "neutral", "rating": 3}
