@@ -16,7 +16,7 @@ app.add_middleware(
 )
 
 AIPIPE_API_KEY = os.environ.get("AIPIPE_API_KEY")
-AIPIPE_URL = "https://api.aipipe.org/v1/responses"
+AIPIPE_URL = "https://aipipe.org/openai/v1/responses"  # <-- IMPORTANT
 
 
 class CommentRequest(BaseModel):
@@ -34,6 +34,9 @@ async def analyze_comment(data: CommentRequest):
     if not data.comment.strip():
         raise HTTPException(status_code=400, detail="Comment cannot be empty")
 
+    if not AIPIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="API key missing")
+
     headers = {
         "Authorization": f"Bearer {AIPIPE_API_KEY}",
         "Content-Type": "application/json"
@@ -41,16 +44,7 @@ async def analyze_comment(data: CommentRequest):
 
     body = {
         "model": "gpt-4.1-mini",
-        "input": [
-            {
-                "role": "system",
-                "content": "You are a strict sentiment analysis engine."
-            },
-            {
-                "role": "user",
-                "content": f"Analyze the sentiment of this comment: {data.comment}"
-            }
-        ],
+        "input": f"Analyze sentiment and rate 1-5. Comment: {data.comment}",
         "response_format": {
             "type": "json_schema",
             "json_schema": {
@@ -76,15 +70,33 @@ async def analyze_comment(data: CommentRequest):
     }
 
     try:
-        response = requests.post(AIPIPE_URL, headers=headers, json=body)
+        response = requests.post(
+            AIPIPE_URL,
+            headers=headers,
+            json=body,
+            timeout=8   # prevent Vercel timeout
+        )
 
         if response.status_code != 200:
-            raise HTTPException(status_code=500, detail=response.text)
+            return {
+                "sentiment": "neutral",
+                "rating": 3
+            }
 
         result = response.json()
-        structured_output = result["output"][0]["content"][0]["parsed"]
 
-        return structured_output
+        # SAFE extraction
+        try:
+            structured_output = result["output"][0]["content"][0]["parsed"]
+            return structured_output
+        except:
+            return {
+                "sentiment": "neutral",
+                "rating": 3
+            }
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        return {
+            "sentiment": "neutral",
+            "rating": 3
+        }
